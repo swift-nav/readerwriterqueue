@@ -47,7 +47,7 @@
 #if defined(AE_VCPP) || defined(AE_ICC)
 #define AE_FORCEINLINE __forceinline
 #elif defined(AE_GCC)
-//#define AE_FORCEINLINE __attribute__((always_inline)) 
+//#define AE_FORCEINLINE __attribute__((always_inline))
 #define AE_FORCEINLINE inline
 #else
 #define AE_FORCEINLINE inline
@@ -245,13 +245,13 @@ public:
 
 	AE_FORCEINLINE operator T() const { return load(); }
 
-	
+
 #ifndef AE_USE_STD_ATOMIC_FOR_WEAK_ATOMIC
 	template<typename U> AE_FORCEINLINE weak_atomic const& operator=(U&& x) { value = std::forward<U>(x); return *this; }
 	AE_FORCEINLINE weak_atomic const& operator=(weak_atomic const& other) { value = other.value; return *this; }
-	
+
 	AE_FORCEINLINE T load() const { return value; }
-	
+
 	AE_FORCEINLINE T fetch_add_acquire(T increment)
 	{
 #if defined(AE_ARCH_X64) || defined(AE_ARCH_X86)
@@ -265,7 +265,7 @@ public:
 		assert(false && "T must be either a 32 or 64 bit type");
 		return value;
 	}
-	
+
 	AE_FORCEINLINE T fetch_add_release(T increment)
 	{
 #if defined(AE_ARCH_X64) || defined(AE_ARCH_X86)
@@ -286,7 +286,7 @@ public:
 		value.store(std::forward<U>(x), std::memory_order_relaxed);
 		return *this;
 	}
-	
+
 	AE_FORCEINLINE weak_atomic const& operator=(weak_atomic const& other)
 	{
 		value.store(other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -294,18 +294,18 @@ public:
 	}
 
 	AE_FORCEINLINE T load() const { return value.load(std::memory_order_relaxed); }
-	
+
 	AE_FORCEINLINE T fetch_add_acquire(T increment)
 	{
 		return value.fetch_add(increment, std::memory_order_acquire);
 	}
-	
+
 	AE_FORCEINLINE T fetch_add_release(T increment)
 	{
 		return value.fetch_add(increment, std::memory_order_release);
 	}
 #endif
-	
+
 
 private:
 #ifndef AE_USE_STD_ATOMIC_FOR_WEAK_ATOMIC
@@ -372,7 +372,7 @@ namespace moodycamel
 		{
 		private:
 		    void* m_hSema;
-		    
+
 		    Semaphore(const Semaphore& other);
 		    Semaphore& operator=(const Semaphore& other);
 
@@ -551,9 +551,89 @@ namespace moodycamel
 		        }
 		    }
 		};
-#else
-#error Unsupported platform! (No semaphore wrapper available)
-#endif
+#else   // #elif defined (_CHIBIOS_RT_)
+        //---------------------------------------------------------
+        // Semaphore (ChibiOS)
+        //---------------------------------------------------------
+        class Semaphore {
+         private:
+          semaphore_t m_sema;
+
+          Semaphore(const Semaphore& other);
+          Semaphore& operator=(const Semaphore& other);
+
+         public:
+          Semaphore(int initialCount = 0) {
+            assert(initialCount >= 0);
+            chSemObjectInit(&m_sema, initialCount);
+          }
+
+          ~Semaphore() {
+            // MP NOTE
+            //
+            // ChibiOS offers no equivalent to POSIX's
+            // `sem_destroy()`.  The best we can do is reset
+            // a semaphore to 0 and let ChibiOS signal all
+            // waiting semaphores by sending `MSG_RESET`.
+            //
+            // TODO(MP): Is this a safe default?  The docs
+            // haven't said for sure what will happen if
+            // some other thread keeps on trying to wait for
+            // this.  I think we had better hope this
+            // destructor is not used often . . .
+            chSemReset(&m_sema, 0);
+          }
+
+          void wait() {
+            // MP NOTE
+            //
+            // I don't think we can do anything here other
+            // than wait for the syscall to complete and
+            // return.  If this is no longer a valid
+            // semaphore (i.e. the return value is
+            // `MSG_RESET`), we have no way to indicate an
+            // error anyway.
+            chSemWait(&m_sema);
+          }
+
+          bool try_wait() {
+            // MP NOTE
+            //
+            // ChibiOS has no `sem_trywait()`
+            // equivalent, but we can simply specify a
+            // zero timeout.
+            const msg_t rc = chSemWaitTimeout(&m_sema, TIME_IMMEDIATE);
+            // Under POSIX, we would return the INVERSE
+            // of "the call failed" AND "the try
+            // failed", i.e. return whether the try was
+            // successful.
+            return !(rc == MSG_RESET || rc == MSG_TIMEOUT);
+          }
+
+          bool timed_wait(std::uint64_t usecs) {
+            // MP NOTE
+            //
+            // Boy, this is a lot simpler than the POSIX
+            // version.  The main difference is that
+            // `chSemWaitTimeout()` wants its timeout as
+            // a time interval, and `sem_timedwait()`
+            // wants an absolute time.
+            const msg_t rc = chSemWaitTimeout(&m_sema, US2ST(usecs));
+            return !(rc == MSG_RESET || rc == MSG_TIMEOUT);
+          }
+
+          void signal() { chSemSignal(&m_sema); }
+
+          void signal(int count) {
+            while (count-- > 0) {
+              chSemSignal(&m_sema);
+            }
+          }
+        };
+
+// #else
+// #error "System not supported -- no semaphore primitive!"
+#endif  /* _WIN32 or __MACH__ or  __unix__ or _CHIBIOS_RT_ */
 
 		//---------------------------------------------------------
 		// LightweightSemaphore
@@ -562,7 +642,7 @@ namespace moodycamel
 		{
 		public:
 			typedef std::make_signed<std::size_t>::type ssize_t;
-			
+
 		private:
 		    weak_atomic<ssize_t> m_count;
 		    Semaphore m_sema;
@@ -647,7 +727,7 @@ namespace moodycamel
 		            m_sema.signal(1);
 		        }
 		    }
-		    
+
 		    ssize_t availableApprox() const
 		    {
 		    	ssize_t count = m_count.load();
